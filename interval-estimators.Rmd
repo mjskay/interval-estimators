@@ -27,6 +27,7 @@ library(tidyr)
 library(ggplot2)
 library(purrr)
 library(sets)
+library(magrittr)
 
 theme_set(theme_ggdist())
 dir.create("sims", showWarnings = FALSE)
@@ -75,7 +76,8 @@ dist = c(
   dist_student_t(3, 0, 1),
   dist_lognormal(c(0,1,2), c(1,1,0.5)),
   dist_beta(10, 1),  # as a check: rmse on lower and upper on beta(1,10) should be similar to upper and lower on beta(10,1)
-  dist_beta(c(1,2,3,6,10), 10)
+  dist_beta(c(1,2,3,6,10), 10),
+  dist_mixture(dist_normal(), dist_normal(6), weights = c(0.6, 0.4))
 )
 
 tibble(dist) |>
@@ -89,19 +91,38 @@ tibble(dist) |>
 We'll generate 100 samples of each sample size from each distribution using a fixed set of seeds:
 
 ```{r}
+list_of_intervals = \(lower, upper) {
+  mapply(reals, lower, upper, SIMPLIFY = FALSE)
+}
+
+matrices_to_intervals = \(matrices) {
+  lapply(matrices, \(m) as.interval(apply(m, 1, \(x) reals(x[[1]], x[[2]]))))
+}
+
 grid = expand.grid(
   dist = dist,
-  n = c(1000, 10000),
+  n = c(500, 1000, 10000),
+  #N.B. this is not a sustainable way fo doing this; long-term should not pre-generate the
+  #whole grid but do it on-demand and then summarize results from each sample.
   seed = 1:100
 ) |>
   as_tibble() |>
   mutate(
     sample = mapply(\(dist, seed, n) withr::with_seed(seed, generate(dist, n)), dist, seed, n),
+    true_hdci = lapply(dist, ggdist::hdci),
+    true_hdci_lower = vapply(true_hdci, min, numeric(1)),
+    true_hdci_upper = vapply(true_hdci, max, numeric(1)),
+    true_hdci = list_of_intervals(true_hdci_lower, true_hdci_upper),
+    
     true_hdi = distributional::hdr(dist),
-    true_hdi_lower = lower(true_hdi),
-    true_hdi_upper = upper(true_hdi)
+    true_hdi = matrices_to_intervals(mapply(cbind, 
+      vctrs::field(true_hdi, "lower"), vctrs::field(true_hdi, "upper"), SIMPLIFY = FALSE
+    )),
+    # for non-mixture distributions the true hdi is the hdci
+    true_hdi = ifelse(family(dist) == "mixture", true_hdi, true_hdci),
+    true_hdi_lower = vapply(true_hdi, min, numeric(1)),
+    true_hdi_upper = vapply(true_hdi, max, numeric(1))
   ) |>
-  select(-true_hdi) |>
   cache("sims/grid.rds")
 ```
 
@@ -110,24 +131,21 @@ grid = expand.grid(
 Calculate HDCIs
 
 ```{r}
-list_of_intervals = \(lower, upper) {
-  mapply(reals, lower, upper, SIMPLIFY = FALSE)
-}
-
 hdci_df = grid |>
   mutate(
     est_interval = lapply(sample, bayestestR::hdi),
     est_lower = lower(est_interval),
     est_upper = upper(est_interval),
     method = "hdci",
-    true_interval = list_of_intervals(true_hdi_lower, true_hdi_upper),
+    type = "hdci",
     est_interval = list_of_intervals(est_lower, est_upper)
   ) |>
   rename(
-    lower = true_hdi_lower,
-    upper = true_hdi_upper
+    true_interval = true_hdci,
+    lower = true_hdci_lower,
+    upper = true_hdci_upper
   ) |>
-  select(-sample) |>
+  select(-sample, -true_hdi, -true_hdi_lower, -true_hdi_upper) |>
   cache("sims/hdci_df.rds")
 ```
 
@@ -140,14 +158,15 @@ hdci2_df = grid |>
     est_lower = vapply(est_interval, min, numeric(1)),
     est_upper = vapply(est_interval, max, numeric(1)),
     method = "hdci2",
-    true_interval = list_of_intervals(true_hdi_lower, true_hdi_upper),
+    type = "hdci",    
     est_interval = list_of_intervals(est_lower, est_upper)
   ) |>
   rename(
-    lower = true_hdi_lower,
-    upper = true_hdi_upper
+    true_interval = true_hdci,
+    lower = true_hdci_lower,
+    upper = true_hdci_upper
   ) |>
-  select(-sample) |>
+  select(-sample, -true_hdi, -true_hdi_lower, -true_hdi_upper) |>
   cache("sims/hdci2_df.rds")
 ```
 
@@ -155,24 +174,21 @@ Calculate HDIs. Note we have to take the lower limit of the lower interval
 (resp. upper limit of upper interval) as there may be multiple intervals per sample:
 
 ```{r}
-matrices_to_intervals = \(matrices) {
-  lapply(matrices, \(m) as.interval(apply(m, 1, \(x) reals(x[[1]], x[[2]]))))
-}
-
 hdi_df = grid |>
   mutate(
     est_interval = lapply(sample, ggdist::hdi),
     est_lower = vapply(est_interval, min, numeric(1)),
     est_upper = vapply(est_interval, max, numeric(1)),
     method = "hdi",
-    true_interval = list_of_intervals(true_hdi_lower, true_hdi_upper),
+    type = "hdi",
     est_interval = matrices_to_intervals(est_interval)
   ) |>
   rename(
+    true_interval = true_hdi,
     lower = true_hdi_lower,
     upper = true_hdi_upper
   ) |>
-  select(-sample) |>
+  select(-sample, -true_hdci, -true_hdci_lower, -true_hdci_upper) |>
   cache("sims/hdi_df.rds")
 ```
 
@@ -185,14 +201,15 @@ spi_df = grid |>
     est_lower = lower(est_interval),
     est_upper = upper(est_interval),
     method = "spi",
-    true_interval = list_of_intervals(true_hdi_lower, true_hdi_upper),
+    type = "hdci",    
     est_interval = list_of_intervals(est_lower, est_upper)    
   ) |>
   rename(
-    lower = true_hdi_lower,
-    upper = true_hdi_upper
+    true_interval = true_hdci,
+    lower = true_hdci_lower,
+    upper = true_hdci_upper
   ) |>
-  select(-sample) |>
+  select(-sample, -true_hdi, -true_hdi_lower, -true_hdi_upper) |>
   cache("sims/spi_df.rds")
 ```
 
@@ -205,12 +222,13 @@ qi_df = grid |>
     est_lower = lower(est_interval),
     est_upper = upper(est_interval),
     method = "qi",
+    type = "qi",    
     lower = quantile(dist, 0.025),
     upper = quantile(dist, 0.975),
     true_interval = list_of_intervals(lower, upper),
     est_interval = list_of_intervals(est_lower, est_upper)
   ) |>
-  select(-sample, -true_hdi_lower, -true_hdi_upper) |>
+  select(-sample, -true_hdi, -true_hdi_lower, -true_hdi_upper, -true_hdci, -true_hdci_lower, -true_hdci_upper) |>
   cache("sims/qi_df.rds")
 ```
 
@@ -223,14 +241,15 @@ hdrcde_df = grid |>
     est_lower = vapply(est_interval, min, numeric(1)),
     est_upper = vapply(est_interval, max, numeric(1)),
     method = "hdrcde",
-    true_interval = list_of_intervals(true_hdi_lower, true_hdi_upper),
+    type = "hdi",
     est_interval = matrices_to_intervals(est_interval)
   ) |>
   rename(
+    true_interval = true_hdi,
     lower = true_hdi_lower,
     upper = true_hdi_upper
   ) |>
-  select(-sample) |>
+  select(-sample, -true_hdci, -true_hdci_lower, -true_hdci_upper) |>
   cache("sims/hdrcde_df.rds")
 ```
 
@@ -243,18 +262,47 @@ hdr_df = grid |>
     est_lower = lower(est_interval),
     est_upper = upper(est_interval),
     method = "hdr",
-    true_interval = list_of_intervals(true_hdi_lower, true_hdi_upper),
+    type = "hdi",    
     est_interval = matrices_to_intervals(mapply(cbind, 
       vctrs::field(est_interval, "lower"), vctrs::field(est_interval, "upper"), SIMPLIFY = FALSE
     ))
   ) |>
   rename(
+    true_interval = true_hdi,
     lower = true_hdi_lower,
     upper = true_hdi_upper
   ) |>
-  select(-sample) |>
+  select(-sample, -true_hdci, -true_hdci_lower, -true_hdci_upper) |>
   cache("sims/hdr_df.rds")
 ```
+
+Shortest interval using quantile estimator:
+
+```{r}
+quantile_shortest_interval = \(x, mass = 0.95, ...) {
+  interval_width = \(p) quantile(x, p + mass, ...) - quantile(x, p, ...)
+  p = optimize(interval_width, c(0, 1 - mass))$minimum
+  as.vector(quantile(x, c(p, p + mass), ...))
+}
+
+qsi_df = grid |>
+  mutate(
+    est_interval = lapply(sample, quantile_shortest_interval, type = 8),
+    est_lower = vapply(est_interval, min, numeric(1)),
+    est_upper = vapply(est_interval, max, numeric(1)),
+    method = "qsi",
+    type = "hdci",
+    est_interval = list_of_intervals(est_lower, est_upper)
+  ) |>
+  rename(
+    true_interval = true_hdci,
+    lower = true_hdci_lower,
+    upper = true_hdci_upper
+  ) |>
+  select(-sample, -true_hdi, -true_hdi_lower, -true_hdi_upper) |>
+  cache("sims/qsi_df.rds")
+```
+
 
 ## Comparing methods
 
@@ -266,29 +314,34 @@ distributions have quite different scales):
 ```{r limit_plot, fig.width = 7, fig.height = 8}
 dist_names = format(dist)
 
-bind_rows(
-  hdi_df,
-  hdci2_df,
-  hdci_df,
-  hdr_df,
-  hdrcde_df,
-  qi_df,
-  spi_df
-) |>
-  group_by(method, dist, n) |>
+all_df = bind_rows(
+    hdi_df,
+    hdci2_df,
+    hdci_df,
+    hdr_df,
+    hdrcde_df,
+    qi_df,
+    spi_df,
+    qsi_df
+  ) |>
+  # enforce a sensible display order on dist names
+  mutate(dist_name = factor(format(dist), levels = rev(dist_names)))
+
+scale_shape_method = scale_shape_manual(values = c(scales::shape_pal()(6), c(1, 2)))
+
+all_df |>
+  group_by(method, dist, dist_name, n) |>
   summarise(
     lower = sqrt(mean((est_lower - lower)^2)),
     upper = sqrt(mean((est_upper - upper)^2)), 
     .groups = "drop"
   ) |>
-  # enforce a sensible display order on dist names
-  mutate(dist_name = factor(format(dist), levels = rev(dist_names))) |>
   pivot_longer(c(lower, upper), names_to = "limit", values_to = "rmse") |>
   ggplot(aes(x = rmse / sqrt(variance(dist)), y = dist_name, color = method, shape = method)) +
   geom_point(alpha = 0.75, size = 3, position = position_dodge(width = 0.5)) +
   geom_vline(xintercept = 0, alpha = 0.25) +
   facet_grid(limit ~ n) +
-  scale_shape_manual(values = c(scales::shape_pal()(6), 1))
+  scale_shape_method
 ```
 
 The "true" instance of an interval (actually set of intervals) for a given distribution and interval type (e.g. quantile interval, highest-density interval (set), or shortest interval) is some subset of $\mathbb{R}$, $I$. Each interval estimator yields an estimate $\hat I$, expressed as a set of disjoint intervals $\left\{[L_1, U_1], \dots\right\}$. Given the sum of the widths of those intervals (i.e. the Lesbegue measure of the set of intervals, $l$), the percent overlap of the estimated interval set and the true interval set is:
@@ -306,15 +359,7 @@ percent_overlap = \(x, y) {
   map2_dbl(x, y, \(x, y) interval_measure(interval_intersection(x, y)) / interval_measure(interval_union(x,y)))
 }
 
-overlap_df = bind_rows(
-  hdi_df,
-  hdci2_df,
-  hdci_df,
-  hdr_df,
-  hdrcde_df,
-  qi_df,
-  spi_df
-) |>
+overlap_df = all_df |>
   mutate(percent_overlap = percent_overlap(true_interval, est_interval)) |>
   cache("sims/overlap_df.rds")
 ```
@@ -323,15 +368,123 @@ And compare:
 
 ```{r percent_overlap_plot}
 overlap_df |>
-  group_by(method, dist, n) |>
+  group_by(method, dist, dist_name, n) |>
   summarise(
     mean_percent_overlap = mean(percent_overlap),
     .groups = "drop"
   ) |>
-  mutate(dist_name = factor(format(dist), levels = rev(dist_names))) |>
   ggplot(aes(x = mean_percent_overlap, y = dist_name, color = method, shape = method)) +
   geom_point(alpha = 0.75, size = 3, position = position_dodge(width = 0.5)) +
   geom_vline(xintercept = 1, alpha = 0.25) +
   facet_grid( ~ n) +
-  scale_shape_manual(values = c(scales::shape_pal()(6), 1))
+  scale_shape_method
 ```
+
+And finally, coverage:
+
+```{r}
+coverage = \(dist, interval) {
+  sum(vapply(unclass(interval), \(i) cdf(dist, i$r) - cdf(dist, i$l), numeric(1)))
+}
+
+coverage_df = all_df |>
+  mutate(
+    coverage = map2_dbl(dist, est_interval, coverage)
+  ) |>
+  cache("sims/coverage_df.rds")
+```
+
+
+```{r coverage_plot, fig.width = 8, fig.height = 8}
+coverage_df |>
+  group_by(method, dist, dist_name, n) |>
+  summarise(
+    mean_coverage = mean(coverage),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = mean_coverage, y = dist_name, color = method, shape = method)) +
+  geom_point(alpha = 0.75, size = 3, position = position_dodge(width = 0.5)) +
+  geom_vline(xintercept = 0.95, alpha = 0.25) +
+  facet_grid(n ~ .) +
+  scale_shape_method 
+```
+
+
+## Variance
+
+```{r variance_plot, fig.width = 8, fig.height = 8}
+all_df |> 
+  group_by(method, type, dist, dist_name, n) |> 
+  summarise(sd = sd(est_lower)) |>
+  ggplot(aes(x = sd/sqrt(variance(dist)), y = dist_name, color = method, shape = method)) +
+  geom_point(alpha = 0.75, size = 3, position = position_dodge(width = 0.5)) +
+  geom_vline(xintercept = 0, alpha = 0.25) +
+  facet_grid(n ~ .) +
+  scale_shape_method 
+```
+
+
+Also worth looking at is the variance of the interval endpoints. I haven't gone far with that yet
+except to show a comparison of QIs to some HDCI implementations:
+
+```{r variance_ribbons}
+set.seed(1234)
+df = data.frame(
+  x = 1:100,
+  y = rnorm(1000000, 0)
+) 
+
+bind_rows(
+  df |>
+    group_by(x) |>
+    median_qi(y, .width = .8) %T>%
+    {cat("qi:\t", sd(.$.lower), "\n")} %>%
+    mutate(method = "qi"),
+  
+  df |>
+    group_by(x) |>
+    median_hdci(y, .width = .8) %T>%
+    {cat("hdci:\t", sd(.$.lower), "\n")} %>%
+    mutate(method = "hdci"),
+
+  df |>
+    group_by(x) |>
+    summarise(
+      qsi = list(quantile_shortest_interval(y, type = 8, mass = 0.8)),
+      .lower = qsi[[1]][[1]],
+      .upper = qsi[[1]][[2]],
+      y = median(y),
+      method = "qsi"
+    ) %T>%
+    {cat("qsi:\t", sd(.$.lower), "\n")},
+  
+  df |>
+    group_by(x) |>
+    summarise(
+      spi = list(bayestestR::spi(y, ci = .8)),
+      .lower = spi[[1]]$CI_low,
+      .upper = spi[[1]]$CI_high,
+      y = median(y),
+      method = "spi"
+    ) %T>%
+    {cat("spi:\t", sd(.$.lower), "\n")},
+
+  df |>
+    group_by(x) |>
+    summarise(
+      hdi = list(distributional::hdr(dist_sample(list(y)), size = 80)),
+      .lower = lower(hdi[[1]]),
+      .upper = upper(hdi[[1]]),
+      y = median(y),
+      method = "hdr"
+    ) %T>%
+    {cat("hdr:\t", sd(.$.lower), "\n")}
+) |>
+  ggplot(aes(x = x, y = y, ymin = .lower, ymax = .upper)) +
+  geom_lineribbon(fill = "gray65") +
+  ggtitle("qi") +
+  ylim(-4, 4) +
+  facet_wrap(~ method)
+```
+
+
