@@ -1,0 +1,84 @@
+---
+title: "Interval method comparison"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(targets)
+library(distributional)
+library(ggplot2)
+library(ggdist)
+library(dplyr)
+
+theme_set(theme_ggdist())
+```
+
+## Read data
+
+```{r}
+intervals = tar_read(eti_intervals) |>
+  mutate(family = family(dist))
+```
+
+## Coverage
+
+By family:
+
+```{r}
+intervals |>
+  ggplot(aes(y = family, x = coverage - mass)) +
+  stat_histinterval(normalize = "groups") +
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  facet_grid(~ mass)
+```
+
+Coverage by family is similar, so let's compare by type:
+
+```{r}
+intervals |>
+  ggplot(aes(y = subtype, x = coverage - mass)) +
+  stat_histinterval(normalize = "groups") +
+  geom_vline(xintercept = 0, linetype = "dashed") + 
+  facet_grid(~ mass)
+```
+
+
+
+## Percent overlap
+
+By family:
+
+```{r}
+intervals |>
+  ggplot(aes(y = family, x = percent_overlap)) +
+  stat_histinterval(normalize = "groups") +
+  geom_vline(xintercept = 1, linetype = "dashed") + 
+  facet_grid(~ mass)
+```
+
+By subtype:
+
+```{r}
+intervals |>
+  ggplot(aes(y = subtype, x = percent_overlap)) +
+  stat_histinterval(normalize = "groups") +
+  geom_vline(xintercept = 1, linetype = "dashed") + 
+  facet_grid(~ mass)
+```
+
+```{r}
+intervals |>
+  group_by(subtype) |>
+  summarise(coverage_bias = round(mean(coverage - mass), 4), percent_overlap = mean(percent_overlap)) |>
+  arrange(coverage_bias)
+```
+
+## Variance
+
+```{r}
+intervals |>
+  group_by(subtype) |>
+  summarise(coverage_sd = sd(coverage - mass), percent_overlap_sd = sd(percent_overlap)) |>
+  arrange(coverage_sd)
+```

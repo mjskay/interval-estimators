@@ -21,5 +21,7 @@ tar_source()
 list(
   sims_targets,
   intervals_targets,
-  intervals_targets_combined
+  eti_intervals_targets_combined,
+  si_intervals_targets_combined,
+  hdi_intervals_targets_combined
 )

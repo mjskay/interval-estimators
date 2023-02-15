@@ -1,0 +1,344 @@
+---
+title: "Shortest interval comparison"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(targets)
+library(distributional)
+library(ggplot2)
+library(ggdist)
+library(dplyr)
+library(forcats)
+library(purrr)
+
+theme_set(theme_ggdist())
+```
+
+## Read data
+
+```{r}
+intervals = tar_read(si_intervals) |>
+  mutate(
+    subtype = fct_reorder(subtype, (coverage - mass)^2),
+    full_method = fct_reorder(paste0(method, "_", subtype), (coverage - mass)^2)
+  ) |>
+  # these are much faster when computed by group
+  group_by(dist) |>
+  mutate(
+    family = family(dist[[1]]),
+    dist_sd = sqrt(variance(dist[[1]]))
+  ) |>
+  ungroup()
+
+endpoints_array = simplify2array(intervals$endpoints)
+intervals$lower = endpoints_array[,1,]
+intervals$upper = endpoints_array[,2,]
+
+true_endpoints_array = simplify2array(intervals$true_endpoints)
+intervals$true_lower = true_endpoints_array[,1,]
+intervals$true_upper = true_endpoints_array[,2,]
+```
+
+## Error, bias, and variance
+
+```{r}
+intervals |>
+  group_by(type, method, subtype) |>
+  summarise(
+    coverage_sd = sd(coverage - mass), 
+    coverage_bias = mean(coverage - mass),
+    coverage_rmse = sqrt(mean((coverage - mass)^2)),
+    percent_overlap_sd = sd(percent_overlap), 
+    upper_rmse = sqrt(mean((upper - true_upper)^2 / dist_sd^2)),
+    lower_rmse = sqrt(mean((lower - true_lower)^2 / dist_sd^2)),
+    .groups = "drop"
+  ) |>
+  arrange(coverage_sd)
+```
+
+### The best subtypes of each method
+
+Find the best subtype of each method to examine in more detail
+
+```{r}
+best_methods = intervals |>
+  group_by(type, method, subtype) |>
+  summarise(
+    coverage_rmse = sqrt(mean((coverage - mass)^2)),
+    .groups = "drop_last"
+  ) |>
+  slice_min(coverage_rmse) |>
+  mutate(full_method = paste0(method, "_", subtype)) |>
+  pull(full_method)
+
+intervals_best = intervals |>
+  filter(full_method %in% best_methods)
+```
+
+Variance metrics of best subtypes:
+
+```{r}
+intervals_best |>
+  group_by(type, method, subtype) |>
+  summarise(
+    coverage_sd = sd(coverage - mass), 
+    coverage_bias = mean(coverage - mass),
+    coverage_rmse = sqrt(mean((coverage - mass)^2)),
+    percent_overlap_sd = sd(percent_overlap), 
+    upper_sd = sd((upper - true_upper) / dist_sd),
+    .groups = "drop"
+  ) |>
+  arrange(coverage_sd)
+```
+
+## Coverage of best methods
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals_best |>
+  ggplot(aes(y = family, x = coverage - mass, color = method)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + method ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+## Percent overlap of best methods
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals_best |>
+  ggplot(aes(y = family, x = percent_overlap, color = method)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 1, alpha = 0.5) + 
+  facet_grid(n + method ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+## Endpoints of best methods
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 6
+intervals_best |>
+  ggplot(aes(y = family, x = (upper - true_upper) / dist_sd, color = method)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + method ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+```{r fig.height = 10/2, fig.width = 6/2}
+intervals_best |>
+  # filter(family == "normal", dist_sd == 1) |>
+  filter(n == 10000) |>
+  ggplot(aes(x = seed, ymin = lower, ymax = upper, group = mass)) +
+  geom_ribbon(alpha = 0.5) +
+  geom_line(aes(y = true_upper), color = "red", alpha = 0.1) +
+  geom_line(aes(y = true_lower), color = "red", alpha = 0.1) +
+  facet_grid(n + format(dist) ~ full_method, scales = "free_y")
+```
+
+## Coverage
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals |>
+  filter(method == "qsi") |>
+  ggplot(aes(y = family, x = coverage - mass, color = subtype)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + subtype ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+Looks like type 6 and 8 are doing better than 7, let's see it without the by-family breakdown:
+
+```{r fig.width=6/2, fig.height=3/2}
+#| fig-width: 6
+#| fig-height: 3
+intervals |>
+  filter(method == "qsi") |>
+  ggplot(aes(y = subtype, x = coverage - mass, color = subtype)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 2,
+    linewidth = 4
+  ) +
+  scale_y_discrete(limits = rev) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+We see that all types are biased to slightly less coverage than nominal, and that the type 6 quantile intervals have slightly better coverage (though the difference is pretty negligible).
+
+### Density-smoothed versus not
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals |>
+  filter(startsWith(as.character(subtype), "type_6_")) |>
+  ggplot(aes(y = family, x = coverage - mass, color = paste0(method, subtype))) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + paste0(method, subtype) ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95"),
+    legend.position = "none"
+  ) +
+  coord_cartesian(xlim = c(-.1,.1))
+```
+
+## Percent overlap
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals |>
+  ggplot(aes(y = family, x = percent_overlap, color = subtype)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 1, alpha = 0.5) + 
+  facet_grid(n + subtype ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+Collapsing over family:
+
+```{r fig.width=6/2, fig.height=3/2}
+#| fig-width: 6
+#| fig-height: 3
+intervals |>
+  ggplot(aes(y = subtype, x = percent_overlap, color = subtype)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 2,
+    linewidth = 4
+  ) +
+  scale_y_discrete(limits = rev) +
+  geom_vline(xintercept = 1, alpha = 0.5) + 
+  facet_grid(n ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+Overlap is essentially identical across subtypes.
+
+## Variance
+
+```{r fig.height = 10, fig.width = 6}
+intervals |>
+  filter(family == "normal", dist_sd == 1) |>
+  ggplot(aes(x = seed, ymin = lower, ymax = upper, group = mass)) +
+  geom_ribbon(alpha = 0.5) +
+  facet_grid(paste0(method, subtype) ~ n)
+```
+
+## RMSE
+
+```{r}
+
+```
+
+## Endpoints
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals |>
+  filter(method == "qsi") |>
+  ggplot(aes(y = family, x = (upper - true_upper) / dist_sd, color = subtype)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + subtype ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+### density-smoothed versus not
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals |>
+  filter(startsWith(as.character(subtype), "type_7_")) |>
+  ggplot(aes(y = family, x = (upper - true_upper) / dist_sd, color = paste0(method, subtype))) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + paste0(method, subtype) ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```

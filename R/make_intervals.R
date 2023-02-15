@@ -1,10 +1,11 @@
-make_intervals = function(interval_function, sims, mass, type) {
+make_intervals = function(interval_function, sims, mass, type, options) {
   method = as_label(enquo(interval_function))
 
   sims |>
     mutate(
-      endpoints = lapply(sample, interval_function, mass = mass),
+      endpoints = lapply(sample, interval_function, mass = mass, options = options),
       method = method,
+      subtype = options_to_string(list(options)),
       type = type,
       mass = mass
     ) |>
@@ -16,15 +17,19 @@ make_intervals = function(interval_function, sims, mass, type) {
 
 apply_true_interval_function = function(type, dist, mass) {
   true_interval_function = switch(type,
-    eti = true_eti
+    eti = true_eti,
+    si = true_si,
+    hdi = true_hdi
   )
   true_interval_function(dist, mass)
 }
 
 add_true_intervals = function(intervals) {
   intervals |>
+    # do this by group since it's faster
+    group_by(type, dist, mass) |>
     mutate(
-      true_endpoints = mapply(apply_true_interval_function, type, dist, mass, SIMPLIFY = FALSE),
+      true_endpoints = list(apply_true_interval_function(type[[1]], dist[[1]], mass[[1]]))
     )
 }
 

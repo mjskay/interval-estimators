@@ -1,0 +1,125 @@
+---
+title: "HDI comparison"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(targets)
+library(distributional)
+library(ggplot2)
+library(ggdist)
+library(dplyr)
+library(forcats)
+library(purrr)
+
+theme_set(theme_ggdist())
+```
+
+## Read data
+
+```{r}
+intervals = tar_read(hdi_intervals) |>
+  mutate(
+    subtype = fct_reorder(subtype, (coverage - mass)^2),
+    full_method = fct_reorder(paste0(method, "_", subtype), (coverage - mass)^2)
+  ) |>
+  # these are much faster when computed by group
+  group_by(dist) |>
+  mutate(
+    family = family(dist[[1]]),
+    dist_sd = sqrt(variance(dist[[1]]))
+  ) |>
+  ungroup()
+```
+
+## Error, bias, and variance
+
+```{r}
+intervals |>
+  group_by(type, method, subtype) |>
+  summarise(
+    coverage_sd = sd(coverage - mass), 
+    coverage_bias = mean(coverage - mass),
+    coverage_rmse = sqrt(mean((coverage - mass)^2)),
+    percent_overlap_sd = sd(percent_overlap), 
+    .groups = "drop"
+  ) |>
+  arrange(coverage_sd)
+```
+
+### The best subtypes of each method
+
+Find the best subtype of each method to examine in more detail
+
+```{r}
+# best_methods = intervals |>
+#   group_by(type, method, subtype) |>
+#   summarise(
+#     coverage_rmse = sqrt(mean((coverage - mass)^2)),
+#     .groups = "drop_last"
+#   ) |>
+#   slice_min(coverage_rmse) |>
+#   mutate(full_method = paste0(method, "_", subtype)) |>
+#   pull(full_method)
+
+intervals_best = intervals # |>
+  # filter(full_method %in% best_methods)
+```
+
+Variance metrics of best subtypes:
+
+```{r}
+intervals_best |>
+  group_by(type, method, subtype) |>
+  summarise(
+    coverage_sd = sd(coverage - mass), 
+    coverage_bias = mean(coverage - mass),
+    coverage_rmse = sqrt(mean((coverage - mass)^2)),
+    percent_overlap_sd = sd(percent_overlap), 
+    .groups = "drop"
+  ) |>
+  arrange(coverage_sd)
+```
+
+## Coverage of best methods
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals_best |>
+  ggplot(aes(y = family, x = coverage - mass, color = method)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 0, alpha = 0.5) + 
+  facet_grid(n + method ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
+
+## Percent overlap of best methods
+
+```{r fig.width=6/2, fig.height=6/2}
+#| fig-width: 6
+#| fig-height: 10
+intervals_best |>
+  ggplot(aes(y = family, x = percent_overlap, color = method)) +
+  stat_interval(
+    aes(color_ramp = after_stat(level), point_color = after_scale(colorspace::darken(color, .2))), 
+    show_point = TRUE, point_size = 0.4,
+    linewidth = 2
+  ) +
+  geom_vline(xintercept = 1, alpha = 0.5) + 
+  facet_grid(n + method ~ mass) +
+  scale_color_brewer(palette = "Set2") +
+  theme(
+    panel.grid.major.x = element_line(color = "gray95"),
+    panel.grid.minor.x = element_line(color = "gray95")
+  )
+```
